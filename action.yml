@@ -1,0 +1,148 @@
+name: 'Setup Conflux'
+description: 'Download, verify, and cache the Conflux CLI binary'
+author: 'Coros Labs'
+
+branding:
+  icon: 'download'
+  color: 'blue'
+
+inputs:
+  version:
+    description: >
+      Conflux version to install. Use 'latest' for the most recent release,
+      or a specific tag (e.g., 'v0.5.0').
+    required: false
+    default: 'latest'
+  github-token:
+    description: >
+      Fine-grained PAT with contents:read on coroslabs/conflux.
+      Used to download private release assets. Never logged.
+    required: true
+
+outputs:
+  version:
+    description: 'The resolved version that was installed'
+    value: ${{ steps.report.outputs.version }}
+  cache-hit:
+    description: 'Whether the binary was restored from cache'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Determine platform
+      id: platform
+      shell: bash
+      run: |
+        OS=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+        case "$OS" in
+          linux)  OS_NAME="linux" ;;
+          macos)  OS_NAME="darwin" ;;
+          windows) OS_NAME="windows" ;;
+          *) echo "::error::Unsupported OS: $RUNNER_OS"; exit 1 ;;
+        esac
+
+        case "$RUNNER_ARCH" in
+          X64)   ARCH="amd64" ;;
+          ARM64) ARCH="arm64" ;;
+          *) echo "::error::Unsupported architecture: $RUNNER_ARCH"; exit 1 ;;
+        esac
+
+        echo "os=$OS_NAME" >> "$GITHUB_OUTPUT"
+        echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+
+        if [ "$OS_NAME" = "windows" ]; then
+          echo "ext=zip" >> "$GITHUB_OUTPUT"
+        else
+          echo "ext=tar.gz" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Resolve version
+      id: version
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        VERSION="${{ inputs.version }}"
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(gh api repos/coroslabs/conflux/releases/latest --jq '.tag_name')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to resolve latest version"
+            exit 1
+          fi
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "Resolved version: $VERSION"
+
+    - name: Check cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.tool_cache }}/conflux/${{ steps.version.outputs.version }}
+        key: conflux-${{ steps.platform.outputs.os }}-${{ steps.platform.outputs.arch }}-${{ steps.version.outputs.version }}
+
+    - name: Download and verify
+      if: steps.cache.outputs.cache-hit != 'true'
+      id: install
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        OS="${{ steps.platform.outputs.os }}"
+        ARCH="${{ steps.platform.outputs.arch }}"
+        EXT="${{ steps.platform.outputs.ext }}"
+        ARCHIVE="conflux_${VERSION#v}_${OS}_${ARCH}.${EXT}"
+        INSTALL_DIR="${{ runner.tool_cache }}/conflux/${VERSION}"
+
+        mkdir -p "$INSTALL_DIR"
+        TMPDIR=$(mktemp -d)
+
+        echo "Downloading $ARCHIVE..."
+        gh release download "$VERSION" \
+          --repo coroslabs/conflux \
+          --pattern "$ARCHIVE" \
+          --pattern "checksums.txt" \
+          --dir "$TMPDIR"
+
+        echo "Verifying checksum..."
+        cd "$TMPDIR"
+        EXPECTED=$(grep "$ARCHIVE" checksums.txt | awk '{print $1}')
+        if [ -z "$EXPECTED" ]; then
+          echo "::error::Archive $ARCHIVE not found in checksums.txt"
+          exit 1
+        fi
+
+        if command -v sha256sum >/dev/null 2>&1; then
+          ACTUAL=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+        else
+          ACTUAL=$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')
+        fi
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+          echo "::error::Checksum mismatch! Expected: $EXPECTED, Got: $ACTUAL"
+          exit 1
+        fi
+        echo "Checksum verified: $ACTUAL"
+
+        if [ "$EXT" = "zip" ]; then
+          unzip -o "$ARCHIVE" -d "$INSTALL_DIR"
+        else
+          tar -xzf "$ARCHIVE" -C "$INSTALL_DIR"
+        fi
+
+        chmod +x "$INSTALL_DIR/conflux"*
+        rm -rf "$TMPDIR"
+
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Report version
+      id: report
+      shell: bash
+      run: |
+        echo "version=${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+    - name: Add to PATH
+      shell: bash
+      run: |
+        echo "${{ runner.tool_cache }}/conflux/${{ steps.version.outputs.version }}" >> "$GITHUB_PATH"
+        echo "Conflux ${{ steps.version.outputs.version }} added to PATH"
