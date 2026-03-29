@@ -15,8 +15,9 @@ inputs:
     default: 'latest'
   github-token:
     description: >
-      Fine-grained PAT with contents:read on coroslabs/conflux.
+      Token with contents:read on coroslabs/conflux.
       Used to download private release assets. Never logged.
+      Can be a GitHub App token, fine-grained PAT, or any token with the required scope.
     required: true
 
 outputs:
@@ -61,14 +62,21 @@ runs:
       id: version
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_VERSION: ${{ inputs.version }}
       run: |
         VERSION="$INPUT_VERSION"
         if [ "$VERSION" = "latest" ]; then
-          VERSION=$(gh api repos/coroslabs/conflux/releases/latest --jq '.tag_name')
-          if [ -z "$VERSION" ]; then
-            echo "::error::Failed to resolve latest version"
+          RESPONSE=$(curl -sfL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/coroslabs/conflux/releases/latest") || {
+            echo "::error::Failed to fetch latest release. Check that the token has contents:read on coroslabs/conflux and that a release exists."
+            exit 1
+          }
+          VERSION=$(echo "$RESPONSE" | jq -r '.tag_name')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::Failed to resolve latest version from release response"
             exit 1
           fi
         fi
@@ -87,7 +95,7 @@ runs:
       id: install
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         OS="${{ steps.platform.outputs.os }}"
@@ -95,17 +103,38 @@ runs:
         EXT="${{ steps.platform.outputs.ext }}"
         ARCHIVE="conflux_${VERSION#v}_${OS}_${ARCH}.${EXT}"
         INSTALL_DIR="${{ runner.tool_cache }}/conflux/${VERSION}"
+        API_BASE="https://api.github.com/repos/coroslabs/conflux"
+        AUTH_HEADER="Authorization: Bearer $GITHUB_TOKEN"
 
         mkdir -p "$INSTALL_DIR"
         TMPDIR=$(mktemp -d)
         trap 'rm -rf "$TMPDIR"' EXIT
 
+        # Fetch release metadata to get asset download URLs
+        RELEASE_JSON=$(curl -sfL \
+          -H "$AUTH_HEADER" \
+          -H "Accept: application/vnd.github+json" \
+          "$API_BASE/releases/tags/$VERSION") || {
+          echo "::error::Failed to fetch release $VERSION. Check that the release exists and the token has access."
+          exit 1
+        }
+
+        # Download archive asset
         echo "Downloading $ARCHIVE..."
-        gh release download "$VERSION" \
-          --repo coroslabs/conflux \
-          --pattern "$ARCHIVE" \
-          --pattern "checksums.txt" \
-          --dir "$TMPDIR"
+        ARCHIVE_URL=$(echo "$RELEASE_JSON" | jq -r ".assets[] | select(.name == \"$ARCHIVE\") | .url")
+        if [ -z "$ARCHIVE_URL" ] || [ "$ARCHIVE_URL" = "null" ]; then
+          echo "::error::Asset $ARCHIVE not found in release $VERSION"
+          exit 1
+        fi
+        curl -sfL -H "$AUTH_HEADER" -H "Accept: application/octet-stream" "$ARCHIVE_URL" -o "$TMPDIR/$ARCHIVE"
+
+        # Download checksums
+        CHECKSUMS_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "checksums.txt") | .url')
+        if [ -z "$CHECKSUMS_URL" ] || [ "$CHECKSUMS_URL" = "null" ]; then
+          echo "::error::checksums.txt not found in release $VERSION"
+          exit 1
+        fi
+        curl -sfL -H "$AUTH_HEADER" -H "Accept: application/octet-stream" "$CHECKSUMS_URL" -o "$TMPDIR/checksums.txt"
 
         echo "Verifying checksum..."
         cd "$TMPDIR"
