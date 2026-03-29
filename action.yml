@@ -15,8 +15,9 @@ inputs:
     default: 'latest'
   github-token:
     description: >
-      Fine-grained PAT with contents:read on coroslabs/conflux.
+      Token with contents:read on coroslabs/conflux.
       Used to download private release assets. Never logged.
+      Can be a GitHub App token, fine-grained PAT, or any token with the required scope.
     required: true
 
 outputs:
