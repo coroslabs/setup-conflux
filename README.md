@@ -4,14 +4,21 @@ A GitHub Action and shell installer for the [Conflux](https://github.com/corosla
 
 ## Prerequisites
 
-Conflux is distributed as a private release. You need a fine-grained personal access token (PAT) to download it.
+Conflux is distributed as a private release. You need a token with `contents:read` on `coroslabs/conflux` to download it.
+
+### Option A: GitHub App (recommended for CI)
+
+1. Create a GitHub App in the `coroslabs` organisation with **Contents: read-only** permission
+2. Install the app on **Only select repositories** → `coroslabs/conflux`
+3. Generate a token from the app (via API or CLI) and store it as a GitHub Actions secret named `CONFLUX_GITHUB_TOKEN`
+
+### Option B: Fine-grained PAT
 
 1. Go to **GitHub > Settings > Developer settings > [Fine-grained personal access tokens](https://github.com/settings/personal-access-tokens/new)**
 2. Set **Resource owner** to `coroslabs`
 3. Under **Repository access**, select **Only select repositories** and choose `coroslabs/conflux`
 4. Under **Permissions > Repository permissions**, set **Contents** to **Read**
-5. Generate the token and copy it
-6. In your consuming repository, go to **Settings > Secrets and variables > Actions** and create a secret named `CONFLUX_PAT` with the token value
+5. Generate the token and store it as a GitHub Actions secret named `CONFLUX_GITHUB_TOKEN`
 
 ## GitHub Actions usage
 
@@ -20,7 +27,7 @@ Conflux is distributed as a private release. You need a fine-grained personal ac
 | Input          | Required | Default    | Description                                                              |
 |----------------|----------|------------|--------------------------------------------------------------------------|
 | `version`      | No       | `latest`   | Version to install. Use `latest` or a specific tag (e.g., `v0.5.0`).    |
-| `github-token` | Yes      | —          | Fine-grained PAT with `contents:read` on `coroslabs/conflux`.           |
+| `github-token` | Yes      | —          | Token with `contents:read` on `coroslabs/conflux`. Can be a GitHub App token, fine-grained PAT, or any token with the required scope. |
 
 ### Outputs
 
@@ -65,7 +72,7 @@ jobs:
         uses: coroslabs/setup-conflux@v1
         with:
           version: 'latest'
-          github-token: ${{ secrets.CONFLUX_PAT }}
+          github-token: ${{ secrets.CONFLUX_GITHUB_TOKEN }}
 
       - name: Run Conflux
         run: conflux version
@@ -79,7 +86,7 @@ The shell installer is for developer machines running macOS or Linux.
 
 | Variable              | Required | Default             | Description                                           |
 |-----------------------|----------|---------------------|-------------------------------------------------------|
-| `GITHUB_TOKEN`        | Yes      | —                   | Fine-grained PAT with `contents:read` on the repo.   |
+| `GITHUB_TOKEN`        | Yes      | —                   | Token with `contents:read` on `coroslabs/conflux`.    |
 | `CONFLUX_VERSION`     | No       | `latest`            | Version to install (e.g., `v0.5.0`).                  |
 | `CONFLUX_INSTALL_DIR` | No       | `$HOME/.local/bin`  | Directory to install the binary into.                 |
 | `HTTPS_PROXY`         | No       | —                   | HTTPS proxy for environments behind a corporate proxy.|
@@ -123,7 +130,7 @@ GOPRIVATE=github.com/phaestostech/* go install github.com/phaestostech/conflux@l
 ## Security
 
 - **Mandatory checksum verification** — both the GitHub Action and shell installer verify SHA-256 checksums from `checksums.txt` before extracting. There is no flag to skip this step.
-- **Token handling** — the PAT is passed via environment variable and is never logged. In GitHub Actions, use repository secrets to store the token.
+- **Token handling** — the token is passed via environment variable and is never logged. In GitHub Actions, use repository secrets to store tokens.
 - **No bypass flags** — checksum verification cannot be disabled. If a checksum does not match, the installation fails.
 
 ## Troubleshooting
@@ -131,7 +138,7 @@ GOPRIVATE=github.com/phaestostech/* go install github.com/phaestostech/conflux@l
 | Symptom                       | Cause                                          | Fix                                                                        |
 |-------------------------------|-------------------------------------------------|----------------------------------------------------------------------------|
 | `conflux: command not found`  | Setup step missing or PATH not configured       | Add the `setup-conflux` step before running conflux commands               |
-| `401 Unauthorized`            | PAT missing, expired, or lacking scope          | Verify the PAT has `contents:read` on `coroslabs/conflux`                  |
+| `401 Unauthorized`            | Token missing, expired, or lacking scope        | Verify the token has `contents:read` on `coroslabs/conflux`                |
 | `Checksum mismatch`           | Corrupted download or tampered release          | Retry the download; if persistent, check the release for corruption        |
 | `Unsupported OS/architecture` | Running on an unsupported platform              | Use Linux/macOS on amd64 or arm64; Windows is supported in GitHub Actions  |
 
